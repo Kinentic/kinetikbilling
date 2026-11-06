@@ -1,0 +1,93 @@
+import type { Charge, ChargeId, IsoDateTime, ScrubSeverity, ScrubViolation } from '../domain/types.ts';
+import type { BillingProviderConfig } from './config.ts';
+import type { ClaimContext } from './context.ts';
+
+export interface ScrubRule {
+  id: string;
+  severity: ScrubSeverity;
+  check(ctx: ClaimContext, cfg: BillingProviderConfig): ScrubViolation[];
+}
+
+type Finding = { message: string; chargeId?: ChargeId };
+
+const rule = (id: string, severity: ScrubSeverity, find: (ctx: ClaimContext, cfg: BillingProviderConfig) => Finding[]): ScrubRule => ({
+  id,
+  severity,
+  check: (ctx, cfg) => find(ctx, cfg).map((f) => ({ rule: id, severity, ...f })),
+});
+
+const perCharge = (id: string, severity: ScrubSeverity, find: (c: Charge, ctx: ClaimContext) => string | undefined): ScrubRule =>
+  rule(id, severity, (ctx) => ctx.charges.flatMap((c) => {
+    const message = find(c, ctx);
+    return message ? [{ message: `${c.externalId}: ${message}`, chargeId: c.id }] : [];
+  }));
+
+const when = (cond: boolean, message: string): Finding[] => (cond ? [{ message }] : []);
+
+const ICD10 = /^[A-TV-Z][0-9][0-9AB]\.?[0-9A-TV-Z]{0,4}$/;
+
+/** NPI check digit: Luhn over the 15 digits formed by prefixing 80840. */
+export const isValidNpi = (npi: string): boolean => {
+  if (!/^\d{10}$/.test(npi)) return false;
+  let sum = 0;
+  const digits = `80840${npi}`;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+};
+
+const datePart = (t: IsoDateTime): string => t.slice(0, 10);
+
+export const RULES: readonly ScrubRule[] = [
+  rule('charges-present', 'error', (ctx) => when(ctx.charges.length === 0, 'claim has no charges')),
+  rule('total-positive', 'error', (ctx) => when(ctx.charges.length > 0 && ctx.claim.totalCharge <= 0, `total charge ${ctx.claim.totalCharge} cents is not positive`)),
+  rule('coverage-present', 'error', (ctx) => when(!ctx.coverage, 'claim has no coverage')),
+  rule('coverage-ids', 'error', (ctx) => [
+    ...when(!!ctx.coverage && !ctx.coverage.memberId.trim(), 'coverage is missing the member id'),
+    ...when(!!ctx.coverage && !ctx.coverage.payerId.trim(), 'coverage is missing the payer id'),
+  ]),
+  rule('diagnoses-present', 'error', (ctx) => when(ctx.diagnoses.length === 0, 'encounter has no diagnoses')),
+  rule('diagnosis-icd10-shape', 'error', (ctx) =>
+    ctx.diagnoses.filter((d) => !ICD10.test(d.code)).map((d) => ({ message: `diagnosis ${d.sequence} code ${d.code} is not ICD-10 shaped` }))),
+  rule('patient-demographics', 'warning', (ctx) => [
+    ...when(!ctx.patient.dob, 'patient date of birth is missing'),
+    ...when(ctx.patient.sex === 'U', 'patient sex is unknown'),
+  ]),
+  rule('patient-address', 'error', (ctx) => when(!ctx.patient.address, 'patient address is missing')),
+  perCharge('charge-service-date', 'error', (c, ctx) => {
+    if (!c.serviceDate) return 'service date is missing';
+    const { admitAt, dischargeAt } = ctx.encounter;
+    if (admitAt && dischargeAt && (c.serviceDate < datePart(admitAt) || c.serviceDate > datePart(dischargeAt))) {
+      return `service date ${c.serviceDate} is outside the encounter ${datePart(admitAt)}..${datePart(dischargeAt)}`;
+    }
+    return undefined;
+  }),
+  perCharge('charge-dx-pointer-dangling', 'error', (c, ctx) => {
+    const known = new Set(ctx.diagnoses.map((d) => d.sequence));
+    const dangling = c.diagnosisPointers.filter((p) => !known.has(p));
+    return dangling.length ? `diagnosis pointers ${dangling.join(',')} reference no diagnosis` : undefined;
+  }),
+  perCharge('charge-dx-pointer-count', 'error', (c) =>
+    c.diagnosisPointers.length > 4 ? `${c.diagnosisPointers.length} diagnosis pointers; the 837P line carries at most 4` : undefined),
+  perCharge('charge-dx-pointer-empty', 'warning', (c) => (c.diagnosisPointers.length === 0 ? 'no diagnosis pointers; defaults to 1' : undefined)),
+  perCharge('charge-performing-provider-missing', 'warning', (c) => (c.performingProvider ? undefined : 'performing provider is missing')),
+  perCharge('charge-performing-provider-npi', 'error', (c) =>
+    c.performingProvider && !isValidNpi(c.performingProvider.npi) ? `performing provider NPI ${c.performingProvider.npi} is invalid` : undefined),
+  perCharge('charge-modifiers', 'error', (c) => (c.modifiers.length > 4 ? `${c.modifiers.length} modifiers; at most 4` : undefined)),
+  rule('billing-provider-npi', 'error', (_ctx, cfg) => when(!isValidNpi(cfg.npi), `billing provider NPI ${cfg.npi} is invalid`)),
+  rule('duplicate-charge-lines', 'warning', (ctx) => {
+    const seen = new Set<string>();
+    return ctx.charges.flatMap((c) => {
+      const key = [c.transactionType, c.code, c.modifiers.join(':'), c.serviceDate, c.performingProvider?.npi ?? ''].join('|');
+      if (!seen.has(key)) { seen.add(key); return []; }
+      return [{ message: `${c.externalId}: duplicates another line (${c.code} on ${c.serviceDate})`, chargeId: c.id }];
+    });
+  }),
+];
+
+export const scrubClaim = (ctx: ClaimContext, cfg: BillingProviderConfig): ScrubViolation[] => RULES.flatMap((r) => r.check(ctx, cfg));
+
+export const hasErrors = (violations: readonly ScrubViolation[]): boolean => violations.some((v) => v.severity === 'error');
