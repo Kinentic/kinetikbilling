@@ -54,7 +54,10 @@ export class MllpDecoder {
 export function startMllpServer(opts: MllpServerOptions): Promise<MllpServer> {
   const log = opts.log ?? (() => {});
   const sockets = new Set<net.Socket>();
+  let closing = false;
   const server = net.createServer((socket) => {
+    // A connection can be accepted after close() began; it must not keep the server alive.
+    if (closing) { socket.destroy(); return; }
     const peer = `${socket.remoteAddress}:${socket.remotePort}`;
     const decoder = new MllpDecoder();
     let queue: Promise<void> = Promise.resolve();
@@ -84,6 +87,7 @@ export function startMllpServer(opts: MllpServerOptions): Promise<MllpServer> {
       resolve({
         port: addr.port,
         close: () => new Promise<void>((done) => {
+          closing = true;
           server.close(() => done());
           for (const s of sockets) s.destroy();
         }),

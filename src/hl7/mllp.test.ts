@@ -83,6 +83,7 @@ test('a failing handler is logged and does not kill the server', async () => {
 test('close destroys open sockets and resolves', async () => {
   const server = await startMllpServer({ port: 0, host: '127.0.0.1', onMessage: async () => 'x' });
   const client = net.connect({ host: '127.0.0.1', port: server.port });
+  client.on('error', () => {});
   await new Promise((r) => client.once('connect', r));
   const closed = new Promise((r) => client.once('close', r));
   await server.close();
