@@ -31,10 +31,16 @@ interface Route {
 
 /** Maps error class names to HTTP statuses so modules stay free of HTTP. */
 const STATUS_BY_ERROR_NAME: Record<string, number> = {
-  NotFoundError: 404,
+  ClaimNotFoundError: 404,
+  EncounterNotFoundError: 404,
+  ClaimContextError: 404,
   InvalidTransitionError: 409,
-  ClaimBuildError: 409,
+  NoCoverageError: 409,
+  NoUnbilledChargesError: 409,
+  Missing837DataError: 422,
+  Edi835ParseError: 400,
   Hl7ParseError: 400,
+  IngestError: 400,
   SyntaxError: 400,
 };
 
