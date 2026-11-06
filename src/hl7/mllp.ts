@@ -3,6 +3,8 @@ import net from 'node:net';
 // Minimal Lower Layer Protocol: <VT 0x0B> message <FS 0x1C> <CR 0x0D>.
 const VT = 0x0b;
 const END = Buffer.from([0x1c, 0x0d]);
+/** Largest unterminated frame kept in memory; anything bigger is a broken or hostile peer. */
+export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 export interface MllpServerOptions {
   port: number;
@@ -27,6 +29,7 @@ export class MllpDecoder {
 
   feed(chunk: Buffer): string[] {
     this.#buf = Buffer.concat([this.#buf, chunk]);
+    if (this.#buf.length > MAX_FRAME_BYTES) this.#buf = Buffer.alloc(0);
     const out: string[] = [];
     for (;;) {
       let start = this.#buf.indexOf(VT);

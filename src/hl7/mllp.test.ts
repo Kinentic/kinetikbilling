@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { test } from 'node:test';
-import { MllpDecoder, buildAck, encodeMllp, parseHl7, startMllpServer } from './index.ts';
+import { MAX_FRAME_BYTES, MllpDecoder, buildAck, encodeMllp, parseHl7, startMllpServer } from './index.ts';
 
 test('encodeMllp wraps with VT ... FS CR', () => {
   const b = encodeMllp('MSH|x');
@@ -87,4 +87,11 @@ test('close destroys open sockets and resolves', async () => {
   const closed = new Promise((r) => client.once('close', r));
   await server.close();
   await closed;
+});
+
+test('decoder drops an unterminated frame that exceeds the size cap', () => {
+  const d = new MllpDecoder();
+  d.feed(Buffer.concat([Buffer.from([0x0b]), Buffer.alloc(MAX_FRAME_BYTES, 0x41)]));
+  const got = d.feed(Buffer.concat([Buffer.from([0x0b]), Buffer.from('MSH|ok'), Buffer.from([0x1c, 0x0d])]));
+  assert.deepEqual(got, ['MSH|ok']);
 });
