@@ -86,6 +86,10 @@ fixtures/hl7/  Cerner-style sample messages with fake PHI
 scripts/       send-hl7 (MLLP client) and e2e
 ```
 
+## Where this is going
+
+[`docs/SPEC.md`](docs/SPEC.md) is the developer specification for the versions after 0.1: document feeds (MDM, ORU, SIU), a coding workbench, multi-client tenancy and identity, clearinghouse transport, Medi-Cal claim content, denials and AR, and the hosting and security posture for PHI. It also lists the gaps below as its starting point.
+
 ## What is deliberately not here yet
 
 - **Secondary and tertiary billing.** A charge carries one claim id, so once the primary claim takes it, a secondary claim finds nothing to bill. Crossover and COB need a charge-to-claim link table.
