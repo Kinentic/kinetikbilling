@@ -23,8 +23,8 @@ export const postRemittance = (store: Store, remit: Remittance, source: '835' | 
   const adjusted = sum(remit.adjustments.filter((a) => WRITE_OFF.includes(a.group)).map((a) => a.amount));
   const patient = prCas.length ? sum(prCas.map((a) => a.amount)) : remit.patientResponsibility;
   // A reversal (CLP02 22) undoes an earlier posting; payers send it negated or not, so take magnitudes.
-  const sign = remit.statusCode === '22' ? -1 : 1;
-  const apply = (total: Cents, delta: Cents): Cents => cents(total + (sign === -1 ? -Math.abs(delta) : delta));
+  const reversal = remit.statusCode === '22';
+  const apply = (total: Cents, delta: Cents): Cents => cents(total + (reversal ? -Math.abs(delta) : delta));
 
   const updated: Claim = {
     ...claim,
@@ -34,7 +34,7 @@ export const postRemittance = (store: Store, remit: Remittance, source: '835' | 
     ...(remit.payerClaimControlNumber ? { payerClaimControlNumber: remit.payerClaimControlNumber } : {}),
   };
   const balance = outstanding(updated);
-  const to: ClaimStatus = remit.statusCode === '4' ? 'denied' : remit.statusCode === '22' ? 'partially_paid' : balance <= 0 ? 'paid' : 'partially_paid';
+  const to: ClaimStatus = remit.statusCode === '4' ? 'denied' : reversal ? 'partially_paid' : balance <= 0 ? 'paid' : 'partially_paid';
 
   store.savePayment({ claimId: claim.id, at: nowIso(), source, remittance: remit });
   return transition(store, updated, to, `remittance ${remit.statusCode}`, { source, remittance: remit, outstanding: balance });

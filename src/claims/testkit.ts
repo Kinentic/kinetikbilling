@@ -57,3 +57,27 @@ export const addCharge = (s: Seeded, overrides: Partial<Charge> = {}): Charge =>
   s.store.saveCharge(charge);
   return charge;
 };
+
+/** Hand-written 835: two CLPs, CAS at claim and service level, CRLF after each segment. */
+export const SAMPLE_835 = [
+  'ISA*00*          *00*          *ZZ*AETNA          *ZZ*KINETIK01      *261101*1200*^*00501*000000101*0*P*:~',
+  'GS*HP*AETNA*KINETIK01*20261101*1200*101*X*005010X221A1~',
+  'ST*835*0001~',
+  'BPR*I*130.00*C*ACH*CCP*01*999999999*DA*123456*1512345678**01*999988880*DA*98765*20261103~',
+  'TRN*1*EFT0042*1512345678~',
+  'N1*PR*AETNA~',
+  'LX*1~',
+  'CLP*FIN000123-1*1*155.50*100.00*25.00*12*PCN001*11*1~',
+  'CAS*CO*45*30.00~',
+  'NM1*QC*1*DOE*JANE****MI*W123456789~',
+  'SVC*HC:99213*125.50*80.00**1~',
+  'DTM*472*20261002~',
+  'CAS*PR*2*20.00**3*5.00~',
+  'SVC*HC:36415*30.00*20.00**1~',
+  'CAS*OA*23*.50~',
+  'CLP*FIN000456-1*4*80.00*0**12*PCN002~',
+  'CAS*CO*29*50.00*1*45*30~',
+  'SE*16*0001~',
+  'GE*1*101~',
+  'IEA*1*000000101~',
+].join('\r\n') + '\r\n';
