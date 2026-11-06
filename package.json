@@ -1,0 +1,20 @@
+{
+  "name": "kinetik-billing",
+  "version": "0.1.0",
+  "description": "Revenue cycle management billing service fed by Cerner HL7 v2 (MLLP) feeds",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "send": "node scripts/send-hl7.ts",
+    "e2e": "node scripts/e2e.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
