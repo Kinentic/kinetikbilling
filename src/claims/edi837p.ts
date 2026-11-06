@@ -1,6 +1,6 @@
 import type { Address, CoveragePriority, IsoDate, PatientClass, Sex, SubscriberRelationship } from '../domain/types.ts';
 import type { BillingProviderConfig } from './config.ts';
-import type { ClaimContext } from './context.ts';
+import { pointersFor, type ClaimContext } from './context.ts';
 import { X12Writer, formatAmount, interchangeControl, isoToX12Date, x12Date, x12Time } from './x12.ts';
 
 export interface Edi837Controls {
@@ -45,7 +45,6 @@ export const build837P = (ctx: ClaimContext, cfg: BillingProviderConfig, control
   const { now } = controls;
   const self = coverage.relationship === 'self';
   const diagnoses = ctx.diagnoses.slice(0, MAX_DIAGNOSES);
-  const hiPosition = new Map(diagnoses.map((d, i) => [d.sequence, String(i + 1)]));
   const st02 = String(controls.transactionSetControlNumber).padStart(4, '0');
 
   const w = new X12Writer();
@@ -96,7 +95,7 @@ export const build837P = (ctx: ClaimContext, cfg: BillingProviderConfig, control
   if (rendering) w.seg('NM1', '82', '1', rendering.lastName, rendering.firstName, '', '', '', 'XX', rendering.npi);
 
   charges.forEach((c, i) => {
-    const pointers = c.diagnosisPointers.map((p) => hiPosition.get(p)).filter((p): p is string => p !== undefined).slice(0, 4);
+    const pointers = pointersFor(c, diagnoses).map(String);
     w.seg('LX', String(i + 1));
     w.seg('SV1', ['HC', c.code, ...c.modifiers.slice(0, 4)], formatAmount(c.amount), 'UN', String(c.units), '', '', pointers.length ? pointers : ['1']);
     w.seg('DTP', '472', 'D8', isoToX12Date(c.serviceDate));

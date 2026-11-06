@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cents, type Charge, type IsoDate, type ScrubSeverity } from '../domain/types.ts';
+import { cents, type ChargeState, type ClaimDiagnosis, type IsoDate, type ScrubSeverity } from '../domain/types.ts';
 import { buildClaim } from './build.ts';
 import type { BillingProviderConfig } from './config.ts';
 import { loadClaimContext, type ClaimContext } from './context.ts';
@@ -13,7 +13,9 @@ const base = (): ClaimContext => {
   return loadClaimContext(s.store, buildClaim(s.store, cfg, s.encounterId).id);
 };
 
-const withCharge = (ctx: ClaimContext, patch: Partial<Charge>): ClaimContext => ({ ...ctx, charges: [{ ...ctx.charges[0]!, ...patch }] });
+const withCharge = (ctx: ClaimContext, patch: Partial<ChargeState>): ClaimContext => ({ ...ctx, charges: [{ ...ctx.charges[0]!, ...patch } as ChargeState] });
+const dx = (n: number, code = 'E11.9'): { sequence: number; code: string; codingSystem: 'ICD10' } => ({ sequence: n, code, codingSystem: 'ICD10' });
+const manyDiagnoses = (n: number): ClaimDiagnosis[] => Array.from({ length: n }, (_, i) => ({ position: i + 1, code: `E11.${i}`, codingSystem: 'ICD10' }));
 
 test('NPI check digit follows the 80840-prefixed Luhn algorithm', () => {
   assert.equal(isValidNpi('1234567893'), true);
@@ -40,9 +42,9 @@ const FIXTURES: { rule: string; severity: ScrubSeverity; ctx: (c: ClaimContext) 
   { rule: 'charge-service-date', severity: 'error', ctx: (c) => withCharge(c, { serviceDate: '' as IsoDate }) },
   { rule: 'charge-service-date', severity: 'error', ctx: (c) => withCharge(c, { serviceDate: '2026-10-04' as IsoDate }) },
   { rule: 'charge-service-date', severity: 'error', ctx: (c) => withCharge(c, { serviceDate: '2026-09-30' as IsoDate }) },
-  { rule: 'charge-dx-pointer-dangling', severity: 'error', ctx: (c) => withCharge(c, { diagnosisPointers: [1, 3] }) },
-  { rule: 'charge-dx-pointer-count', severity: 'error', ctx: (c) => withCharge(c, { diagnosisPointers: [1, 2, 1, 2, 1] }) },
-  { rule: 'charge-dx-pointer-empty', severity: 'warning', ctx: (c) => withCharge(c, { diagnosisPointers: [] }) },
+  { rule: 'claim-dx-count', severity: 'error', ctx: (c) => ({ ...c, diagnoses: manyDiagnoses(13) }) },
+  { rule: 'charge-dx-count', severity: 'error', ctx: (c) => withCharge(c, { diagnoses: [dx(1), dx(2, 'I10'), dx(3, 'J45.909'), dx(4, 'K21.9'), dx(5, 'M54.5')] }) },
+  { rule: 'charge-dx-empty', severity: 'warning', ctx: (c) => withCharge(c, { diagnoses: [] }) },
   { rule: 'charge-performing-provider-missing', severity: 'warning', ctx: (c) => withCharge(c, { performingProvider: undefined }) },
   { rule: 'charge-performing-provider-npi', severity: 'error', ctx: (c) => withCharge(c, { performingProvider: { lastName: 'X', firstName: 'Y', npi: '1234567890' } }) },
   { rule: 'charge-modifiers', severity: 'error', ctx: (c) => withCharge(c, { modifiers: ['25', '59', 'XU', 'LT', 'RT'] }) },

@@ -4,13 +4,15 @@
 import type { Store } from '../db/store.ts';
 import type { AppConfig } from '../config.ts';
 import type {
-  ChargeStatus, ClaimId, ClaimStatus, ClaimType, CoveragePriority, EncounterId, InboundMessageStatus, MessageId, PatientId, Remittance,
+  ChargeSource, ChargeStatus, ClaimId, ClaimStatus, ClaimType, CoveragePriority, EncounterId, InboundMessageStatus, MessageId, PatientId, Remittance,
 } from '../domain/types.ts';
 import {
   acknowledge, buildClaim, build837P, closeClaim, loadClaimContext, markSubmitted, parse835, postRemittance, rescrub, reworkClaim,
   type Edi837Controls,
 } from '../claims/index.ts';
-import { HttpError, Router, requireObject, requireString } from './router.ts';
+import { summarizeDocuments } from '../coding/index.ts';
+import { addCodingRoutes } from './coding-routes.ts';
+import { HttpError, Router, oneOf, requireObject, requireString } from './router.ts';
 
 /** Result of feeding one raw HL7 message through ingest; mirrors ingest's processMessage. */
 export interface IngestResult {
@@ -44,14 +46,9 @@ const int = (q: URLSearchParams, key: string, fallback: number): number => {
   return n;
 };
 
-const oneOf = <T extends string>(value: string | null | undefined, allowed: readonly T[], label: string): T | undefined => {
-  if (value === null || value === undefined) return undefined;
-  if (!(allowed as readonly string[]).includes(value)) throw new HttpError(400, `${label} must be one of ${allowed.join(', ')}`);
-  return value as T;
-};
-
 const CLAIM_STATUSES: readonly ClaimStatus[] = ['draft', 'scrub_failed', 'ready', 'submitted', 'rejected', 'accepted', 'paid', 'partially_paid', 'denied', 'closed'];
 const CHARGE_STATUSES: readonly ChargeStatus[] = ['unbilled', 'claimed', 'voided'];
+const CHARGE_SOURCES: readonly ChargeSource[] = ['cerner_dft', 'coder'];
 const MESSAGE_STATUSES: readonly InboundMessageStatus[] = ['accepted', 'error', 'duplicate', 'unsupported'];
 
 const parseRemittance = (body: unknown): Remittance => {
@@ -127,6 +124,8 @@ export function buildRouter({ store, config, ingest }: ApiDeps): Router {
       diagnoses: store.listDiagnoses(id),
       charges: store.listCharges({ encounterId: id }),
       claims: store.listClaims({ encounterId: id }),
+      documents: summarizeDocuments(store.listDocuments(id)),
+      task: store.findTaskByEncounter(id),
     };
   });
   r.add('POST', '/encounters/:id/claims', ({ params, body }) => {
@@ -142,6 +141,7 @@ export function buildRouter({ store, config, ingest }: ApiDeps): Router {
   r.add('GET', '/charges', ({ query }) => store.listCharges({
     ...(query.get('encounterId') ? { encounterId: query.get('encounterId') as EncounterId } : {}),
     ...(query.get('status') ? { status: oneOf(query.get('status'), CHARGE_STATUSES, 'status')! } : {}),
+    ...(query.get('source') ? { source: oneOf(query.get('source'), CHARGE_SOURCES, 'source')! } : {}),
   }));
 
   r.add('GET', '/claims', ({ query }) => store.listClaims({
@@ -195,5 +195,6 @@ export function buildRouter({ store, config, ingest }: ApiDeps): Router {
 
   r.add('GET', '/ar/summary', () => store.claimTotalsByStatus());
 
+  addCodingRoutes(r, { store, config });
   return r;
 }

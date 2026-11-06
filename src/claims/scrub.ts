@@ -1,30 +1,31 @@
-import type { Charge, ChargeId, IsoDateTime, ScrubSeverity, ScrubViolation } from '../domain/types.ts';
+import type { ChargeId, ChargeState, CodeLineId, IsoDateTime, ScrubSeverity, ScrubViolation } from '../domain/types.ts';
 import type { BillingProviderConfig } from './config.ts';
 import type { ClaimContext } from './context.ts';
 
-export interface ScrubRule {
+/** A rule over some read model. Claim-time rules use ClaimContext; coding-time edits reuse rule() and when() over their own context. */
+export interface ScrubRule<Ctx = ClaimContext> {
   id: string;
   severity: ScrubSeverity;
-  check(ctx: ClaimContext, cfg: BillingProviderConfig): ScrubViolation[];
+  check(ctx: Ctx, cfg: BillingProviderConfig): ScrubViolation[];
 }
 
-type Finding = { message: string; chargeId?: ChargeId };
+export type Finding = { message: string; chargeId?: ChargeId; lineId?: CodeLineId };
 
-const rule = (id: string, severity: ScrubSeverity, find: (ctx: ClaimContext, cfg: BillingProviderConfig) => Finding[]): ScrubRule => ({
+export const rule = <Ctx>(id: string, severity: ScrubSeverity, find: (ctx: Ctx, cfg: BillingProviderConfig) => Finding[]): ScrubRule<Ctx> => ({
   id,
   severity,
   check: (ctx, cfg) => find(ctx, cfg).map((f) => ({ rule: id, severity, ...f })),
 });
 
-const perCharge = (id: string, severity: ScrubSeverity, find: (c: Charge, ctx: ClaimContext) => string | undefined): ScrubRule =>
-  rule(id, severity, (ctx) => ctx.charges.flatMap((c) => {
+const perCharge = (id: string, severity: ScrubSeverity, find: (c: ChargeState, ctx: ClaimContext) => string | undefined): ScrubRule =>
+  rule<ClaimContext>(id, severity, (ctx) => ctx.charges.flatMap((c) => {
     const message = find(c, ctx);
     return message ? [{ message: `${c.externalId}: ${message}`, chargeId: c.id }] : [];
   }));
 
-const when = (cond: boolean, message: string): Finding[] => (cond ? [{ message }] : []);
+export const when = (cond: boolean, message: string): Finding[] => (cond ? [{ message }] : []);
 
-const ICD10 = /^[A-Z][0-9][0-9AB]\.?[0-9A-Z]{0,4}$/;
+export const ICD10 = /^[A-Z][0-9][0-9AB]\.?[0-9A-Z]{0,4}$/;
 
 /** NPI check digit: Luhn over the 15 digits formed by prefixing 80840. */
 export const isValidNpi = (npi: string): boolean => {
@@ -49,9 +50,10 @@ export const RULES: readonly ScrubRule[] = [
     ...when(!!ctx.coverage && !ctx.coverage.memberId.trim(), 'coverage is missing the member id'),
     ...when(!!ctx.coverage && !ctx.coverage.payerId.trim(), 'coverage is missing the payer id'),
   ]),
-  rule('diagnoses-present', 'error', (ctx) => when(ctx.diagnoses.length === 0, 'encounter has no diagnoses')),
+  rule('diagnoses-present', 'error', (ctx) => when(ctx.diagnoses.length === 0, 'claim has no diagnoses')),
   rule('diagnosis-icd10-shape', 'error', (ctx) =>
-    ctx.diagnoses.filter((d) => !ICD10.test(d.code)).map((d) => ({ message: `diagnosis ${d.sequence} code ${d.code} is not ICD-10 shaped` }))),
+    ctx.diagnoses.filter((d) => !ICD10.test(d.code)).map((d) => ({ message: `diagnosis ${d.position} code ${d.code} is not ICD-10 shaped` }))),
+  rule('claim-dx-count', 'error', (ctx) => when(ctx.diagnoses.length > 12, `${ctx.diagnoses.length} diagnoses; the 837P claim carries at most 12`)),
   rule('patient-demographics', 'warning', (ctx) => [
     ...when(!ctx.patient.dob, 'patient date of birth is missing'),
     ...when(ctx.patient.sex === 'U', 'patient sex is unknown'),
@@ -65,14 +67,8 @@ export const RULES: readonly ScrubRule[] = [
     }
     return undefined;
   }),
-  perCharge('charge-dx-pointer-dangling', 'error', (c, ctx) => {
-    const known = new Set(ctx.diagnoses.map((d) => d.sequence));
-    const dangling = c.diagnosisPointers.filter((p) => !known.has(p));
-    return dangling.length ? `diagnosis pointers ${dangling.join(',')} reference no diagnosis` : undefined;
-  }),
-  perCharge('charge-dx-pointer-count', 'error', (c) =>
-    c.diagnosisPointers.length > 4 ? `${c.diagnosisPointers.length} diagnosis pointers; the 837P line carries at most 4` : undefined),
-  perCharge('charge-dx-pointer-empty', 'warning', (c) => (c.diagnosisPointers.length === 0 ? 'no diagnosis pointers; defaults to 1' : undefined)),
+  perCharge('charge-dx-count', 'error', (c) => (c.diagnoses.length > 4 ? `${c.diagnoses.length} diagnoses; the 837P line carries at most 4` : undefined)),
+  perCharge('charge-dx-empty', 'warning', (c) => (c.diagnoses.length === 0 ? 'no diagnoses; the line pointer defaults to 1' : undefined)),
   perCharge('charge-performing-provider-missing', 'warning', (c) => (c.performingProvider ? undefined : 'performing provider is missing')),
   perCharge('charge-performing-provider-npi', 'error', (c) =>
     c.performingProvider && !isValidNpi(c.performingProvider.npi) ? `performing provider NPI ${c.performingProvider.npi} is invalid` : undefined),

@@ -10,6 +10,8 @@ const load = (name: string): string => readFileSync(new URL(name, dir), 'utf8');
 const expected: Record<string, string> = {
   'adt-a04-register.hl7': 'ADT^A04', 'adt-a08-update.hl7': 'ADT^A08', 'adt-a03-discharge.hl7': 'ADT^A03',
   'adt-a40-merge.hl7': 'ADT^A40', 'dft-p03-charges.hl7': 'DFT^P03', 'bar-p01-account.hl7': 'BAR^P01',
+  'mdm-t02-progress-note.hl7': 'MDM^T02', 'mdm-t08-corrected-note.hl7': 'MDM^T08',
+  'oru-r01-radiology-preliminary.hl7': 'ORU^R01', 'oru-r01-radiology-final.hl7': 'ORU^R01',
 };
 
 test('each fixture parses with the expected type and trigger, \\r terminators and unique control ids', () => {
@@ -49,6 +51,18 @@ test('A03 sets PV1-45, A40 carries the prior MRN, DFT has two charges and a cred
   assert.equal(reps(ft1[0]!, 26).length, 2);
   assert.equal(comp(ft1[0]!, 19, 1), 'R07.9');
   assert.equal(comp(ft1[0]!, 20, 13), 'NPI');
+});
+
+test('the MDM pair shares TXA-12 with AU then LA status; the ORU pair shares OBR-3 with P then F', () => {
+  const [t02, t08] = ['mdm-t02-progress-note.hl7', 'mdm-t08-corrected-note.hl7'].map((f) => firstSegment(parseHl7(load(f)), 'TXA')!);
+  assert.deepEqual([comp(t02!, 12, 1), comp(t08!, 12, 1)], ['DOC0001', 'DOC0001']);
+  assert.deepEqual([comp(t02!, 17), comp(t08!, 17)], ['AU', 'LA']);
+  assert.equal(comp(t02!, 5, 13), 'NPI');
+  assert.equal(segments(parseHl7(load('mdm-t02-progress-note.hl7')), 'OBX').length, 3);
+  const [prelim, final] = ['oru-r01-radiology-preliminary.hl7', 'oru-r01-radiology-final.hl7'].map((f) => firstSegment(parseHl7(load(f)), 'OBR')!);
+  assert.deepEqual([comp(prelim!, 3, 1), comp(final!, 3, 1)], ['RAD5501', 'RAD5501']);
+  assert.deepEqual([comp(prelim!, 25), comp(final!, 25)], ['P', 'F']);
+  assert.equal(comp(final!, 32, 1, 1), '2222222226');
 });
 
 test('scripts/send-hl7.ts sends fixtures over MLLP and reports AA, exiting 0', async () => {

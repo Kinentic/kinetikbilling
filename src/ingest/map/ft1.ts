@@ -1,4 +1,4 @@
-import { cents, type Charge, type ChargeCodeSystem, type IsoDate } from '../../domain/types.ts';
+import { cents, type ChargeCodeSystem, type ChargeLine, type IsoDate } from '../../domain/types.ts';
 import { comp, parseHl7Date, repComp, reps, type Hl7Segment } from '../../hl7/index.ts';
 import { IngestError } from '../handler.ts';
 import { codingSystemOf, normalizeDxCode, type DiagnosisRef } from './dg1.ts';
@@ -6,9 +6,9 @@ import { parseMoney } from './money.ts';
 import { nonEmpty } from './text.ts';
 import { mapXcn } from './xcn.ts';
 
-export type MappedCharge = Omit<Charge, 'id' | 'encounterId' | 'status' | 'claimId' | 'diagnosisPointers'> & {
-  /** FT1-19 codes, resolved to pointers once the encounter's diagnosis list is known. */
-  diagnoses: DiagnosisRef[];
+export type MappedCharge = Omit<ChargeLine, 'id' | 'encounterId' | 'diagnoses'> & {
+  /** FT1-19 codes; upsertCharges gives each its sequence on the encounter's list and copies it onto the charge by value. */
+  diagnosisRefs: DiagnosisRef[];
 };
 
 export interface Ft1Context {
@@ -68,7 +68,7 @@ export function mapFt1(ft1: Hl7Segment, ctx: Ft1Context): MappedCharge | undefin
     revenueCode: procedure && /^\d{4}$/.test(transactionCode) ? transactionCode : undefined,
     performingProvider: mapXcn(ft1, 20),
     orderingProvider: mapXcn(ft1, 21),
-    diagnoses: reps(ft1, 19)
+    diagnosisRefs: reps(ft1, 19)
       .map((r) => ({ code: normalizeDxCode(repComp(r, 1)), description: nonEmpty(repComp(r, 2)), codingSystem: codingSystemOf(repComp(r, 3)) }))
       .filter((d) => d.code !== ''),
   };

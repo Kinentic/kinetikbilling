@@ -8,7 +8,7 @@ import { buildRouter } from './api/routes.ts';
 import { loadConfig, type AppConfig } from './config.ts';
 import { Store } from './db/store.ts';
 import { startMllpServer, type MllpServer } from './hl7/index.ts';
-import { processMessage } from './ingest/index.ts';
+import { handlersFor, processMessage } from './ingest/index.ts';
 
 export interface RunningApp {
   mllpPort: number;
@@ -22,19 +22,20 @@ const log = (line: string): void => console.log(`${new Date().toISOString()} ${l
 export async function startApp(config: AppConfig): Promise<RunningApp> {
   if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive: true });
   const store = new Store(config.dbPath);
+  const handlers = handlersFor(config.coding);
 
   const mllp: MllpServer = await startMllpServer({
     port: config.mllp.port,
     host: config.mllp.host,
     log,
     onMessage: async (raw, peer) => {
-      const result = processMessage(store, raw);
+      const result = processMessage(store, raw, handlers);
       log(`hl7 from ${peer}: ${result.status}${result.summary ? ` (${result.summary})` : ''}${result.error ? ` error: ${result.error}` : ''}`);
       return result.ack;
     },
   });
 
-  const router = buildRouter({ store, config, ingest: (raw) => processMessage(store, raw) });
+  const router = buildRouter({ store, config, ingest: (raw) => processMessage(store, raw, handlers) });
   const httpServer = http.createServer((req, res) => { void router.handle(req, res); });
   await new Promise<void>((resolve, reject) => {
     httpServer.once('error', reject);

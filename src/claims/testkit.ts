@@ -1,8 +1,8 @@
 import { Store } from '../db/store.ts';
 import { newId, nowIso } from '../domain/ids.ts';
 import {
-  cents, type Charge, type ChargeId, type Coverage, type CoverageId, type Diagnosis, type Encounter, type EncounterId, type IsoDate, type IsoDateTime,
-  type Patient, type PatientId,
+  cents, type CernerCharge, type ChargeId, type CodeAssignmentId, type CodeLineId, type CoderCharge, type Coverage, type CoverageId, type Diagnosis, type Encounter,
+  type EncounterId, type IsoDate, type IsoDateTime, type Patient, type PatientId,
 } from '../domain/types.ts';
 import type { BillingProviderConfig } from './config.ts';
 
@@ -47,14 +47,30 @@ export const seed = (opts: { patient?: Partial<Patient>; encounter?: Partial<Enc
 };
 
 let externalSeq = 0;
-export const addCharge = (s: Seeded, overrides: Partial<Charge> = {}): Charge => {
-  const charge: Charge = {
-    id: newId<ChargeId>(), encounterId: s.encounterId, externalId: `T${++externalSeq}`, transactionType: 'CG', serviceDate: '2026-10-02' as IsoDate,
-    codeSystem: 'CPT', code: '99213', modifiers: [], units: 1, amount: cents(12550),
-    performingProvider: { lastName: 'Smith', firstName: 'Ann', npi: RENDERING_NPI }, diagnosisPointers: [1], status: 'unbilled',
-    ...overrides,
-  };
-  s.store.saveCharge(charge);
+const line = (s: Seeded): Omit<CernerCharge, 'source'> => ({
+  id: newId<ChargeId>(), encounterId: s.encounterId, externalId: `T${++externalSeq}`, transactionType: 'CG', serviceDate: '2026-10-02' as IsoDate,
+  codeSystem: 'CPT', code: '99213', modifiers: [], units: 1, amount: cents(12550),
+  performingProvider: { lastName: 'Smith', firstName: 'Ann', npi: RENDERING_NPI },
+  diagnoses: [{ sequence: 1, code: 'E11.9', codingSystem: 'ICD10' }],
+});
+
+/** A Cerner (FT1) charge carrying the seeded principal diagnosis by value. */
+export const addCharge = (s: Seeded, overrides: Partial<CernerCharge> = {}): CernerCharge => {
+  const charge: CernerCharge = { ...line(s), source: 'cerner_dft', ...overrides };
+  s.store.saveCernerCharge(charge);
+  return charge;
+};
+
+/** A released coder charge, the only kind that can be voided. Its decided code-log row is written first: charges reference code_assignments. */
+export const addCoderCharge = (s: Seeded, overrides: Partial<CoderCharge> = {}): CoderCharge => {
+  const codeAssignmentId = newId<CodeAssignmentId>();
+  const charge: CoderCharge = { ...line(s), source: 'coder', codeAssignmentId, externalId: `${codeAssignmentId}#1`, ...overrides };
+  const at = nowIso();
+  s.store.appendCodeAssignments([{
+    id: codeAssignmentId, encounterId: s.encounterId, lineId: newId<CodeLineId>(), removed: false, provenance: 'coder', recordedAt: at, decision: { by: 'coder-1', at },
+    content: { kind: 'procedure', codeSystem: charge.codeSystem, code: charge.code, modifiers: charge.modifiers, units: charge.units, serviceDate: charge.serviceDate, diagnosisCodes: charge.diagnoses.map((d) => d.code) },
+  }]);
+  s.store.insertCoderCharges([charge]);
   return charge;
 };
 

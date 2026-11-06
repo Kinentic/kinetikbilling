@@ -4,7 +4,7 @@ import { mapPid, selectMrn } from '../map/pid.ts';
 import { findPatient, mergePatients, upsertPatient } from '../upsert.ts';
 
 /** ADT^A40: PID is the survivor, MRG-1 names the prior MRN whose encounters move to it. */
-export const merge: MessageHandler = (store, msg, now) => {
+export const merge: MessageHandler = (store, msg, { now }) => {
   const pid = firstSegment(msg, 'PID');
   if (!pid) throw new IngestError('ADT^A40 has no PID segment');
   const mrg = firstSegment(msg, 'MRG');
