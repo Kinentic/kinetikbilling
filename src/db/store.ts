@@ -409,7 +409,7 @@ export class Store {
   saveMessage(m: InboundMessage): void {
     this.#run(`insert into inbound_messages (id, control_id, sending_application, sending_facility, message_type, trigger_event, received_at, raw, status, error)
       values (?,?,?,?,?,?,?,?,?,?)
-      on conflict(id) do update set status=excluded.status, error=excluded.error`,
+      on conflict(id) do update set received_at=excluded.received_at, raw=excluded.raw, status=excluded.status, error=excluded.error`,
       [m.id, m.controlId, m.sendingApplication, m.sendingFacility, m.messageType, m.triggerEvent, m.receivedAt, m.raw, m.status, m.error ?? null]);
   }
 }
