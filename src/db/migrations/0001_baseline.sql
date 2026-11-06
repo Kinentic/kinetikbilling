@@ -1,6 +1,3 @@
-pragma journal_mode = wal;
-pragma foreign_keys = on;
-
 create table if not exists patients (
   id text primary key,
   mrn_value text not null,

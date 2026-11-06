@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cents, type ScrubViolation } from '../domain/types.ts';
-import { NoCoverageError, NoUnbilledChargesError, buildClaim, reworkClaim } from './build.ts';
+import { cents, type CoverageId, type ScrubViolation } from '../domain/types.ts';
+import { newId, nowIso } from '../domain/ids.ts';
+import { NoCoverageError, NoUnbilledChargesError, buildClaim, draftClaim, reworkClaim } from './build.ts';
 import { acknowledge, markSubmitted } from './submit.ts';
 import { InvalidTransitionError } from './state.ts';
-import { addCharge, cfg, seed } from './testkit.ts';
+import { addCharge, addCoderCharge, cfg, seed } from './testkit.ts';
 
 test('buildClaim attaches unbilled charges, sums signed cents, and lands in ready', () => {
   const s = seed();
@@ -21,7 +22,7 @@ test('buildClaim attaches unbilled charges, sums signed cents, and lands in read
   for (const c of [a, b, credit]) {
     const stored = s.store.getCharge(c.id)!;
     assert.equal(stored.status, 'claimed');
-    assert.equal(stored.claimId, claim.id);
+    assert.deepEqual(stored.claimIds, [claim.id]);
   }
   assert.deepEqual(s.store.listClaimEvents(claim.id).map((e) => [e.from, e.to]), [[null, 'draft'], ['draft', 'ready']]);
 });
@@ -37,7 +38,7 @@ test('a second buildClaim adds the new charge to the same claim', () => {
   assert.equal(s.store.listClaims({ encounterId: s.encounterId }).length, 1);
   assert.equal(second.totalCharge, 11500);
   assert.equal(second.status, 'ready');
-  assert.equal(s.store.getCharge(late.id)!.claimId, first.id);
+  assert.deepEqual(s.store.getCharge(late.id)!.claimIds, [first.id]);
   assert.deepEqual(s.store.listClaimEvents(first.id).map((e) => e.to), ['draft', 'ready', 'draft', 'ready']);
 });
 
@@ -96,4 +97,47 @@ test('reworkClaim sends a rejected claim back through draft and rescrubs it', ()
   assert.equal(reworked.status, 'ready');
   assert.deepEqual(s.store.listClaimEvents(claim.id).slice(-3).map((e) => [e.from, e.to]), [['submitted', 'rejected'], ['rejected', 'draft'], ['draft', 'ready']]);
   assert.throws(() => reworkClaim(s.store, cfg, claim.id), InvalidTransitionError);
+});
+
+test('buildClaim rescrubs an open claim whose charge was voided, so the total drops', () => {
+  const s = seed();
+  const kept = addCoderCharge(s, { amount: cents(10000) });
+  const voided = addCoderCharge(s, { code: '36415', amount: cents(1500) });
+  const first = buildClaim(s.store, cfg, s.encounterId);
+  assert.equal(first.totalCharge, 11500);
+  s.store.voidCharges([voided.id], nowIso());
+  const again = buildClaim(s.store, cfg, s.encounterId);
+  assert.equal(again.id, first.id);
+  assert.equal(again.totalCharge, 10000);
+  assert.equal(again.status, 'ready');
+  assert.equal(s.store.getCharge(voided.id)!.status, 'voided');
+  assert.equal(s.store.getCharge(kept.id)!.status, 'claimed');
+});
+
+test('a charge on the primary claim is still billable to a secondary coverage', () => {
+  const s = seed();
+  s.store.replaceCoverages(s.encounterId, [s.coverage, { ...s.coverage, id: newId<CoverageId>(), priority: 2, payerId: '00123', payerName: 'Medicare', memberId: 'MBI1' }]);
+  const charge = addCharge(s);
+  const primary = buildClaim(s.store, cfg, s.encounterId);
+  const secondary = buildClaim(s.store, cfg, s.encounterId, { coveragePriority: 2 });
+  assert.notEqual(secondary.id, primary.id);
+  assert.deepEqual(new Set(s.store.getCharge(charge.id)!.claimIds), new Set([primary.id, secondary.id]));
+  assert.throws(() => buildClaim(s.store, cfg, s.encounterId, { coveragePriority: 3 }), NoCoverageError);
+});
+
+test('draftClaim parks a ready claim, is a no-op on a draft, and refuses a submitted claim', () => {
+  const s = seed();
+  addCharge(s);
+  const ready = buildClaim(s.store, cfg, s.encounterId);
+  const parked = draftClaim(s.store, ready.id, 'task reopened', { taskId: 'T1' });
+  assert.equal(parked.status, 'draft');
+  const again = draftClaim(s.store, ready.id, 'task reopened');
+  assert.deepEqual(again, parked);
+  const events = s.store.listClaimEvents(ready.id);
+  assert.deepEqual(events.slice(-1).map((e) => [e.from, e.to, e.reason, e.detail]), [['ready', 'draft', 'task reopened', { taskId: 'T1' }]]);
+  assert.equal(events.length, 3);
+  const rescrubbed = buildClaim(s.store, cfg, s.encounterId);
+  assert.equal(rescrubbed.status, 'ready');
+  markSubmitted(s.store, ready.id, new Date());
+  assert.throws(() => draftClaim(s.store, ready.id, 'too late'), InvalidTransitionError);
 });

@@ -15,8 +15,8 @@ const elements = (x12: string, id: string) => segments(x12).filter((l) => l.star
 
 test('a self-subscriber claim renders the 005010X222A1 loops in order', () => {
   const s = seed();
-  addCharge(s, { externalId: 'FT1-A', code: '99213', modifiers: ['25'], amount: cents(12550), diagnosisPointers: [2, 1] });
-  addCharge(s, { externalId: 'FT1-B', code: '36415', amount: cents(1500), diagnosisPointers: [], performingProvider: { lastName: 'Smith', firstName: 'Ann', npi: BILLING_NPI } });
+  addCharge(s, { externalId: 'FT1-A', code: '99213', modifiers: ['25'], amount: cents(12550), diagnoses: [{ sequence: 2, code: 'I10', codingSystem: 'ICD10' }, { sequence: 1, code: 'E11.9', codingSystem: 'ICD10' }] });
+  addCharge(s, { externalId: 'FT1-B', code: '36415', amount: cents(1500), diagnoses: [], performingProvider: { lastName: 'Smith', firstName: 'Ann', npi: BILLING_NPI } });
   assert.deepEqual(segments(render(s)), [
     'ISA*00*          *00*          *ZZ*KINETIK01      *ZZ*CLEARHOUSE     *261105*1430*^*00501*000000042*0*P*:~',
     'GS*HC*KINETIK01*CLEARHOUSE*20261105*1430*7*X*005010X222A1~',
@@ -134,4 +134,14 @@ test('X12Writer trims trailing empty elements and components and can drop newlin
   w.seg('HL', '1', '', '20');
   assert.equal(w.toString(), 'SV1*HC:99213*1.00~HL*1**20~');
   assert.equal(w.count, 2);
+});
+
+test('HI is derived from the charges: ordered by the lowest sequence, then first appearance, capped at 12', () => {
+  const s = seed();
+  const d = (sequence: number, code: string) => ({ sequence, code, codingSystem: 'ICD10' as const });
+  addCharge(s, { externalId: 'A', diagnoses: [d(3, 'I10'), d(1, 'E11.9')] });
+  addCharge(s, { externalId: 'B', code: '36415', diagnoses: [d(2, 'J45.909'), d(2, 'I10')] });
+  const x12 = render(s);
+  assert.deepEqual(elements(x12, 'HI')[0]!.slice(1), ['ABK:E119', 'ABF:I10', 'ABF:J45909']);
+  assert.deepEqual(elements(x12, 'SV1').map((e) => e[7]), ['2:1', '3:2']);
 });

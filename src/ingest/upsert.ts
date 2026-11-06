@@ -5,10 +5,12 @@
 import type { Store } from '../db/store.ts';
 import { newId } from '../domain/ids.ts';
 import type {
-  Charge, ChargeId, CoverageId, Diagnosis, Encounter, EncounterId, IsoDateTime, Patient, PatientId, SourceIdentifier,
+  CernerCharge, ChargeDiagnosis, ChargeId, CoverageId, Diagnosis, Document, DocumentId, Encounter, EncounterId, IsoDateTime, MessageId, Patient, PatientId,
+  SourceIdentifier,
 } from '../domain/types.ts';
 import { IngestError } from './handler.ts';
 import type { DiagnosisRef, MappedDiagnosis } from './map/dg1.ts';
+import type { MappedDocument } from './map/document.ts';
 import type { MappedCharge } from './map/ft1.ts';
 import type { MappedGuarantor } from './map/gt1.ts';
 import type { MappedCoverage } from './map/in1.ts';
@@ -86,31 +88,60 @@ export function mergeDiagnoses(store: Store, encounterId: EncounterId, incoming:
 export interface ChargeCounts { created: number; updated: number }
 
 /**
- * Saves each charge keyed on (encounter, externalId). FT1-19 codes become
- * pointers (diagnosis sequences) on the encounter's list; a code the encounter
- * lacks is appended as a final diagnosis first.
+ * Saves each FT1 line as a Cerner charge keyed on (encounter, FT1-2). An FT1-19 code
+ * joins the encounter's diagnosis list first (appended as a final diagnosis when the
+ * encounter lacks it) so it has a sequence, then lands on the charge by value. Claim
+ * links live in claim_charges, so an in-place update carries nothing forward.
  */
-export function upsertCharges(store: Store, encounterId: EncounterId, charges: MappedCharge[]): ChargeCounts {
+export function upsertCharges(store: Store, encounterId: EncounterId, charges: readonly MappedCharge[]): ChargeCounts {
   const dx = store.listDiagnoses(encounterId);
   const before = dx.length;
-  const pointerFor = (ref: DiagnosisRef): number =>
-    dx.find((d) => d.code === ref.code)?.sequence
-      ?? mergeInto(dx, encounterId, { ...ref, type: 'F', sequence: Math.max(0, ...dx.map((d) => d.sequence)) + 1 }).sequence;
+  const byValue = (ref: DiagnosisRef): ChargeDiagnosis => {
+    const d = dx.find((x) => x.code === ref.code)
+      ?? mergeInto(dx, encounterId, { ...ref, type: 'F', sequence: Math.max(0, ...dx.map((x) => x.sequence)) + 1 });
+    return { sequence: d.sequence, code: d.code, codingSystem: d.codingSystem, ...(d.description ? { description: d.description } : {}) };
+  };
 
   const counts: ChargeCounts = { created: 0, updated: 0 };
-  const rows: Charge[] = charges.map(({ diagnoses, ...line }) => {
-    const existing = store.findCharge(encounterId, line.externalId);
+  const rows: CernerCharge[] = charges.map(({ diagnosisRefs, ...line }) => {
+    const existing = store.findCernerCharge(encounterId, line.externalId);
     counts[existing ? 'updated' : 'created']++;
-    return {
-      ...line,
-      id: existing?.id ?? newId<ChargeId>(),
-      encounterId,
-      status: existing?.status ?? 'unbilled',
-      ...(existing?.claimId ? { claimId: existing.claimId } : {}),
-      diagnosisPointers: diagnoses.map(pointerFor),
-    };
+    return { ...line, id: existing?.id ?? newId<ChargeId>(), encounterId, source: 'cerner_dft', diagnoses: diagnosisRefs.map(byValue) };
   });
   if (dx.length > before) store.replaceDiagnoses(encounterId, dx);
-  for (const row of rows) store.saveCharge(row);
+  for (const row of rows) store.saveCernerCharge(row);
   return counts;
+}
+
+export interface DocumentAppend {
+  /** The version now current for (encounter, externalId): the one written, or the stored one when nothing was. */
+  document: Document;
+  /**
+   * new          first version of this externalId
+   * new_version  content differs from the latest version (a correction, or a final after a preliminary)
+   * unchanged    identical to the latest version: redelivery under a new MSH-10, or a retry; nothing written
+   * stale        a preliminary arriving after a final for the same externalId; nothing written
+   */
+  outcome: 'new' | 'new_version' | 'unchanged' | 'stale';
+  /** The version this one supersedes, when outcome is new_version. */
+  prior?: Document;
+}
+
+const documentContent = (d: MappedDocument): string => JSON.stringify([d.kind, d.status, d.title ?? null, d.author?.npi ?? null, d.signedAt ?? null, d.observedAt ?? null, d.body, d.attachment ?? null]);
+
+/**
+ * The single writer of documents. Compares the mapped content (kind, status, title, author
+ * NPI, signedAt, observedAt, body, attachment) with the latest version for (encounter,
+ * externalId) and appends version n+1 only when it differs. This is what makes a resent
+ * MDM/ORU create no second version and no second task fact.
+ */
+export function appendDocumentVersion(store: Store, encounterId: EncounterId, messageId: MessageId, mapped: MappedDocument, now: IsoDateTime): DocumentAppend {
+  const latest = store.latestDocumentVersion(encounterId, mapped.externalId);
+  if (latest) {
+    if (mapped.status === 'preliminary' && latest.status !== 'preliminary') return { document: latest, outcome: 'stale' };
+    if (documentContent(latest) === documentContent(mapped)) return { document: latest, outcome: 'unchanged' };
+  }
+  const document: Document = { ...mapped, id: newId<DocumentId>(), encounterId, messageId, version: (latest?.version ?? 0) + 1, recordedAt: now };
+  store.appendDocument(document);
+  return latest ? { document, outcome: 'new_version', prior: latest } : { document, outcome: 'new' };
 }

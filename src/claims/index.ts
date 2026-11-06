@@ -1,8 +1,8 @@
 export { TRANSITIONS, InvalidTransitionError, ClaimNotFoundError, canTransition, transition } from './state.ts';
-export { loadClaimContext, ClaimContextError, type ClaimContext } from './context.ts';
+export { loadClaimContext, claimDiagnoses, pointersFor, ClaimContextError, type ClaimContext } from './context.ts';
 export type { BillingProviderConfig } from './config.ts';
-export { buildClaim, rescrub, reworkClaim, NoCoverageError, NoUnbilledChargesError, EncounterNotFoundError } from './build.ts';
-export { RULES, scrubClaim, isValidNpi, type ScrubRule } from './scrub.ts';
+export { OPEN, buildClaim, rescrub, reworkClaim, draftClaim, NoCoverageError, NoUnbilledChargesError, EncounterNotFoundError } from './build.ts';
+export { RULES, scrubClaim, hasErrors, isValidNpi, rule, when, ICD10, type ScrubRule, type Finding } from './scrub.ts';
 export { X12Writer } from './x12.ts';
 export { build837P, Missing837DataError, type Edi837Controls } from './edi837p.ts';
 export { parse835, Edi835ParseError } from './edi835.ts';

@@ -58,4 +58,4 @@ export function ingestDemographics(store: Store, msg: Hl7Message, now: IsoDateTi
   return { patient, encounter, parts };
 }
 
-export const demographics: MessageHandler = (store, msg, now) => ({ summary: ingestDemographics(store, msg, now).parts.join(', ') });
+export const demographics: MessageHandler = (store, msg, ctx) => ({ summary: ingestDemographics(store, msg, ctx.now).parts.join(', ') });

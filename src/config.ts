@@ -3,15 +3,17 @@
 // production deployments set the BILLING_* identifiers to real ones.
 
 import type { BillingProviderConfig } from './claims/config.ts';
+import { BILLING_MODES, type CodingConfig } from './coding/index.ts';
 
-export type { BillingProviderConfig };
-
+export type { BillingProviderConfig, CodingConfig };
 
 export interface AppConfig {
   mllp: { port: number; host: string };
   http: { port: number; host: string };
   dbPath: string;
   billing: BillingProviderConfig;
+  /** BILLING_MODE (coder | pass_through, default coder), DOCUMENTATION_GRACE_HOURS (48), QA_SAMPLE_PERCENT (0). */
+  coding: CodingConfig;
 }
 
 const str = (env: NodeJS.ProcessEnv, key: string, fallback: string): string => {
@@ -25,6 +27,22 @@ const port = (env: NodeJS.ProcessEnv, key: string, fallback: number): number => 
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0 || n > 65535) throw new Error(`${key} must be a TCP port, got ${JSON.stringify(raw)}`);
   return n;
+};
+
+const intInRange = (env: NodeJS.ProcessEnv, key: string, fallback: number, min: number, max: number): number => {
+  const raw = env[key];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${key} must be an integer from ${min} to ${max}, got ${JSON.stringify(raw)}`);
+  return n;
+};
+
+const billingMode = (env: NodeJS.ProcessEnv): CodingConfig['mode'] => {
+  const raw = env.BILLING_MODE;
+  if (raw === undefined || raw === '') return 'coder';
+  const mode = BILLING_MODES.find((m) => m === raw);
+  if (!mode) throw new Error(`BILLING_MODE must be one of ${BILLING_MODES.join(', ')}, got ${JSON.stringify(raw)}`);
+  return mode;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -49,6 +67,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       contactPhone: str(env, 'SUBMITTER_CONTACT_PHONE', '5035550100'),
       receiverId: str(env, 'RECEIVER_ID', 'CLEARINGHOUSE'),
       receiverName: str(env, 'RECEIVER_NAME', 'CLEARINGHOUSE'),
+    },
+    coding: {
+      mode: billingMode(env),
+      documentationGraceHours: intInRange(env, 'DOCUMENTATION_GRACE_HOURS', 48, 0, 24 * 365),
+      qaSamplePercent: intInRange(env, 'QA_SAMPLE_PERCENT', 0, 0, 100),
     },
   };
 }

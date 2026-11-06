@@ -29,15 +29,24 @@ interface Route {
   handler: Handler;
 }
 
-/** Maps error class names to HTTP statuses so modules stay free of HTTP. */
-const STATUS_BY_ERROR_NAME: Record<string, number> = {
+/** Maps error class names to HTTP statuses so modules stay free of HTTP. router.test.ts checks every exported error class has a row. */
+export const STATUS_BY_ERROR_NAME: Record<string, number> = {
   ClaimNotFoundError: 404,
   EncounterNotFoundError: 404,
   ClaimContextError: 404,
+  TaskNotFoundError: 404,
+  CodeLineNotFoundError: 404,
+  QueryNotFoundError: 404,
   InvalidTransitionError: 409,
+  InvalidTaskTransitionError: 409,
+  TaskNotEditableError: 409,
+  TaskAssignedElsewhereError: 409,
+  StaleCodeLineError: 409,
+  QueryAlreadyAnsweredError: 409,
   NoCoverageError: 409,
   NoUnbilledChargesError: 409,
   Missing837DataError: 422,
+  FeeScheduleError: 400,
   Edi835ParseError: 400,
   Hl7ParseError: 400,
   IngestError: 400,
@@ -109,3 +118,9 @@ export function requireObject(body: unknown): Record<string, unknown> {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new HttpError(400, 'body must be a JSON object');
   return body as Record<string, unknown>;
 }
+/** `value` must be one of `allowed`, or absent. */
+export const oneOf = <T extends string>(value: string | null | undefined, allowed: readonly T[], label: string): T | undefined => {
+  if (value === null || value === undefined) return undefined;
+  if (!(allowed as readonly string[]).includes(value)) throw new HttpError(400, `${label} must be one of ${allowed.join(', ')}`);
+  return value as T;
+};

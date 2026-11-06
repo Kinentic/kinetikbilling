@@ -2,7 +2,7 @@ import type { Store } from '../db/store.ts';
 import { newId, nowIso } from '../domain/ids.ts';
 import type { InboundMessage, InboundMessageStatus, IsoDateTime, MessageId } from '../domain/types.ts';
 import { buildAck, formatHl7DateTime, parseHl7, type Hl7Message } from '../hl7/index.ts';
-import { HANDLERS } from './registry.ts';
+import type { HandlerTable } from './handler.ts';
 
 export interface ProcessResult {
   ack: string;
@@ -16,11 +16,12 @@ type Header = Pick<InboundMessage, 'controlId' | 'sendingApplication' | 'sending
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
- * Parses, dedupes on (MSH-4, MSH-10), dispatches through HANDLERS and records
- * an InboundMessage for every outcome. Never throws: every failure becomes an
- * AE or AR acknowledgement.
+ * Parses, dedupes on (MSH-4, MSH-10), dispatches through `handlers` and records an
+ * InboundMessage for every outcome. Never throws: every failure becomes an AE or AR
+ * acknowledgement. `handlers` is required (`handlersFor(config.coding)`), so no caller
+ * inherits a billing mode by accident.
  */
-export function processMessage(store: Store, raw: string, now: IsoDateTime = nowIso()): ProcessResult {
+export function processMessage(store: Store, raw: string, handlers: HandlerTable, now: IsoDateTime = nowIso()): ProcessResult {
   let msg: Hl7Message;
   try {
     msg = parseHl7(raw);
@@ -29,7 +30,7 @@ export function processMessage(store: Store, raw: string, now: IsoDateTime = now
   }
   if (msg.header.controlId === '') return reject(store, raw, now, headerOf(msg), 'MSH-10 message control id is empty');
   try {
-    return dispatch(store, msg, raw, now);
+    return dispatch(store, msg, raw, handlers, now);
   } catch (e) {
     const error = errorText(e);
     return { ack: buildAck(msg, 'AE', error), status: 'error', error };
@@ -44,7 +45,7 @@ const headerOf = (msg: Hl7Message): Header => ({
   triggerEvent: msg.header.triggerEvent,
 });
 
-function dispatch(store: Store, msg: Hl7Message, raw: string, now: IsoDateTime): ProcessResult {
+function dispatch(store: Store, msg: Hl7Message, raw: string, handlers: HandlerTable, now: IsoDateTime): ProcessResult {
   const header = headerOf(msg);
   const prior = store.findMessage(header.sendingFacility, header.controlId);
   if (prior && prior.status !== 'error') return { ack: buildAck(msg, 'AA'), status: 'duplicate' };
@@ -54,7 +55,7 @@ function dispatch(store: Store, msg: Hl7Message, raw: string, now: IsoDateTime):
     store.saveMessage({ id, ...header, receivedAt: now, raw, status, ...(error === undefined ? {} : { error }) });
 
   const type = `${header.messageType}^${header.triggerEvent}`;
-  const handler = HANDLERS[type];
+  const handler = handlers[type];
   if (!handler) {
     // Acknowledged, not rejected: an AR/AE would stall Cerner's outbound queue over a message we do not bill from.
     record('unsupported');
@@ -62,7 +63,7 @@ function dispatch(store: Store, msg: Hl7Message, raw: string, now: IsoDateTime):
   }
   try {
     const { summary } = store.transaction(() => {
-      const result = handler(store, msg, now);
+      const result = handler(store, msg, { now, messageId: id });
       record('accepted');
       return result;
     });

@@ -2,13 +2,16 @@
 // callers never see column names. One Store per process; node:sqlite is
 // synchronous, so every method runs to completion before the next starts.
 
-import { readFileSync } from 'node:fs';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import type {
-  Charge, ChargeId, ChargeStatus, Claim, ClaimEvent, ClaimId, ClaimStatus, Coverage, CoverageId,
-  Diagnosis, Encounter, EncounterId, Guarantor, InboundMessage, InboundMessageStatus, MessageId,
-  Patient, PatientId, Payment,
+  CernerCharge, ChargeId, ChargeLine, ChargeSource, ChargeState, ChargeStatus, Claim, ClaimEvent, ClaimId, ClaimStatus, CodeAssignment,
+  CodeAssignmentId, CodeLineId, CoderCharge, CodingTask, CodingTaskEvent, CodingTaskId, Coverage, CoverageId, Diagnosis, Document, DocumentId,
+  Encounter, EncounterId, FeeScheduleLine, Guarantor, InboundMessage, InboundMessageStatus, IsoDateTime, MessageId, Patient, PatientId, Payment,
+  ProviderQuery, ProviderQueryId, Specialty, TaskStatus,
 } from '../domain/types.ts';
+import { loadMigrations, migrate } from './migrations.ts';
+
+const MIGRATIONS = loadMigrations();
 
 type Row = Record<string, SQLInputValue>;
 
@@ -90,27 +93,36 @@ const diagnosisFromRow = (r: Row): Diagnosis => compact({
   presentOnAdmission: opt(r.poa),
 });
 
-const chargeFromRow = (r: Row): Charge => compact({
+const chargeLineFromRow = (r: Row): ChargeLine => compact({
   id: r.id as ChargeId,
   encounterId: r.encounter_id as EncounterId,
   externalId: r.external_id as string,
-  transactionType: r.transaction_type as Charge['transactionType'],
-  serviceDate: r.service_date as Charge['serviceDate'],
+  transactionType: r.transaction_type as ChargeLine['transactionType'],
+  serviceDate: r.service_date as ChargeLine['serviceDate'],
   postedDate: opt(r.posted_date),
-  codeSystem: r.code_system as Charge['codeSystem'],
+  codeSystem: r.code_system as ChargeLine['codeSystem'],
   code: r.code as string,
   modifiers: unjson<string[]>(r.modifiers_json) ?? [],
   description: opt(r.description),
   units: r.units as number,
-  amount: r.amount as Charge['amount'],
+  amount: r.amount as ChargeLine['amount'],
   department: opt(r.department),
   revenueCode: opt(r.revenue_code),
   performingProvider: unjson(r.performing_json),
   orderingProvider: unjson(r.ordering_json),
-  diagnosisPointers: unjson<number[]>(r.dx_pointers_json) ?? [],
-  status: r.status as ChargeStatus,
-  claimId: opt(r.claim_id),
+  diagnoses: unjson<ChargeLine['diagnoses']>(r.diagnoses_json) ?? [],
 });
+
+const cernerChargeFromRow = (r: Row): CernerCharge => ({ ...chargeLineFromRow(r), source: 'cerner_dft' });
+
+/** Reads the charge_states view: the stored row plus its derived status and claim links. */
+const chargeStateFromRow = (r: Row): ChargeState => {
+  const state = { status: r.status as ChargeStatus, claimIds: unjson<ClaimId[]>(r.claim_ids_json) ?? [] };
+  if (r.source === 'coder') {
+    return compact({ ...chargeLineFromRow(r), source: 'coder', codeAssignmentId: r.code_assignment_id as CodeAssignmentId, voidedAt: opt(r.voided_at), ...state });
+  }
+  return { ...cernerChargeFromRow(r), ...state };
+};
 
 const claimFromRow = (r: Row): Claim => compact({
   id: r.id as ClaimId,
@@ -159,8 +171,91 @@ const messageFromRow = (r: Row): InboundMessage => compact({
   error: opt(r.error),
 });
 
+const documentFromRow = (r: Row): Document => compact({
+  id: r.id as DocumentId,
+  encounterId: r.encounter_id as EncounterId,
+  messageId: r.message_id as MessageId,
+  externalId: r.external_id as string,
+  version: r.version as number,
+  kind: r.kind as Document['kind'],
+  status: r.status as Document['status'],
+  title: opt(r.title),
+  author: unjson(r.author_json),
+  signedAt: opt(r.signed_at),
+  observedAt: opt(r.observed_at),
+  body: r.body as string,
+  attachment: unjson(r.attachment_json),
+  recordedAt: r.recorded_at as Document['recordedAt'],
+});
+
+const taskFromRow = (r: Row): CodingTask => compact({
+  id: r.id as CodingTaskId,
+  encounterId: r.encounter_id as EncounterId,
+  status: r.status as TaskStatus,
+  specialty: opt(r.specialty),
+  assignee: opt(r.assignee),
+  origin: unjson<CodingTask['origin']>(r.origin_json)!,
+  documentationDueAt: opt(r.documentation_due_at),
+  createdAt: r.created_at as CodingTask['createdAt'],
+  updatedAt: r.updated_at as CodingTask['updatedAt'],
+});
+
+const taskEventFromRow = (r: Row): CodingTaskEvent => compact({
+  taskId: r.task_id as CodingTaskId,
+  at: r.at as CodingTaskEvent['at'],
+  from: (r.from_status as TaskStatus | null) ?? null,
+  to: r.to_status as TaskStatus,
+  reason: r.reason as string,
+  actor: opt(r.actor),
+  detail: unjson(r.detail_json),
+});
+
+const codeAssignmentFromRow = (r: Row): CodeAssignment => compact({
+  id: r.id as CodeAssignmentId,
+  encounterId: r.encounter_id as EncounterId,
+  lineId: r.line_id as CodeLineId,
+  supersedes: opt(r.supersedes),
+  content: unjson<CodeAssignment['content']>(r.content_json)!,
+  removed: r.removed === 1,
+  provenance: r.provenance as CodeAssignment['provenance'],
+  sourceRef: opt(r.source_ref),
+  suggestedBy: unjson(r.suggested_by_json),
+  decision: r.decided_by === null ? undefined : compact({
+    by: r.decided_by as string, at: r.decided_at as IsoDateTime, queryId: opt<ProviderQueryId>(r.query_id),
+  }),
+  recordedAt: r.recorded_at as CodeAssignment['recordedAt'],
+});
+
+const queryFromRow = (r: Row): ProviderQuery => compact({
+  id: r.id as ProviderQueryId,
+  taskId: r.task_id as CodingTaskId,
+  question: r.question as string,
+  raisedBy: r.raised_by as string,
+  sentTo: unjson(r.sent_to_json),
+  channel: r.channel as ProviderQuery['channel'],
+  sentAt: r.sent_at as ProviderQuery['sentAt'],
+  answer: r.answer_text === null ? undefined : { text: r.answer_text as string, at: r.answered_at as IsoDateTime },
+});
+
+const modifiersKey = (modifiers: readonly string[]): string => [...modifiers].sort().join(':');
+const feeLineFromRow = (r: Row): FeeScheduleLine => compact({
+  code: r.code as string,
+  modifiers: r.modifiers_key === '' ? [] : (r.modifiers_key as string).split(':'),
+  amount: r.amount as FeeScheduleLine['amount'],
+  effectiveFrom: r.effective_from as FeeScheduleLine['effectiveFrom'],
+  effectiveTo: opt(r.effective_to),
+});
+
 export interface ListClaimsFilter { status?: ClaimStatus; encounterId?: EncounterId; patientId?: PatientId }
-export interface ListChargesFilter { encounterId?: EncounterId; status?: ChargeStatus; claimId?: ClaimId }
+/** `status` filters the derived column; `claimId` joins claim_charges. */
+export interface ListChargesFilter { encounterId?: EncounterId; status?: ChargeStatus; claimId?: ClaimId; source?: ChargeSource }
+export interface ListTasksFilter {
+  status?: TaskStatus;
+  assignee?: string;
+  specialty?: Specialty;
+  /** awaiting_documentation tasks whose documentationDueAt is at or before this instant: the lead's overdue list. */
+  documentationOverdueAt?: IsoDateTime;
+}
 
 export class Store {
   readonly #db: DatabaseSync;
@@ -168,7 +263,9 @@ export class Store {
   /** path ':memory:' gives an isolated in-memory database for tests. */
   constructor(path: string) {
     this.#db = new DatabaseSync(path);
-    this.#db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
+    this.#db.exec('pragma journal_mode = wal');
+    this.#db.exec('pragma foreign_keys = on');
+    migrate(this.#db, MIGRATIONS);
   }
 
   close(): void { this.#db.close(); }
@@ -316,34 +413,74 @@ export class Store {
     });
   }
 
-  // Charges
+  // Charges. Writers: ingest/upsert.ts (Cerner lines), coding release (coder lines). Status is derived by the charge_states view.
 
-  getCharge(id: ChargeId): Charge | undefined {
-    return this.#one('select * from charges where id = ?', [id], chargeFromRow);
+  getCharge(id: ChargeId): ChargeState | undefined {
+    return this.#one('select * from charge_states where id = ?', [id], chargeStateFromRow);
   }
-  findCharge(encounterId: EncounterId, externalId: string): Charge | undefined {
-    return this.#one('select * from charges where encounter_id = ? and external_id = ?', [encounterId, externalId], chargeFromRow);
+  /** Cerner identity: (encounter, 'cerner_dft', FT1-2). */
+  findCernerCharge(encounterId: EncounterId, externalId: string): CernerCharge | undefined {
+    return this.#one("select * from charges where encounter_id = ? and source = 'cerner_dft' and external_id = ?", [encounterId, externalId], cernerChargeFromRow);
   }
-  listCharges(f: ListChargesFilter = {}): Charge[] {
+  listCharges(f: ListChargesFilter = {}): ChargeState[] {
     const where: string[] = [];
     const params: SQLInputValue[] = [];
     if (f.encounterId) { where.push('encounter_id = ?'); params.push(f.encounterId); }
+    if (f.source) { where.push('source = ?'); params.push(f.source); }
     if (f.status) { where.push('status = ?'); params.push(f.status); }
-    if (f.claimId) { where.push('claim_id = ?'); params.push(f.claimId); }
-    const sql = `select * from charges ${where.length ? 'where ' + where.join(' and ') : ''} order by service_date, external_id`;
-    return this.#many(sql, params, chargeFromRow);
+    if (f.claimId) { where.push('id in (select charge_id from claim_charges where claim_id = ?)'); params.push(f.claimId); }
+    const sql = `select * from charge_states ${where.length ? 'where ' + where.join(' and ') : ''} order by service_date, external_id`;
+    return this.#many(sql, params, chargeStateFromRow);
   }
-  saveCharge(c: Charge): void {
-    this.#run(`insert into charges (id, encounter_id, external_id, transaction_type, service_date, posted_date, code_system, code, modifiers_json, description, units, amount,
-        department, revenue_code, performing_json, ordering_json, dx_pointers_json, status, claim_id)
-      values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  /**
+   * Charges billable to `coverageId`: not voided and not linked to any claim on that
+   * coverage. A charge on the primary claim is still billable to the secondary.
+   */
+  listBillableCharges(encounterId: EncounterId, coverageId: CoverageId): ChargeState[] {
+    return this.#many(`select * from charge_states cs where cs.encounter_id = ? and cs.voided_at is null
+        and not exists (select 1 from claim_charges cc join claims cl on cl.id = cc.claim_id where cc.charge_id = cs.id and cl.coverage_id = ?)
+      order by service_date, external_id`, [encounterId, coverageId], chargeStateFromRow);
+  }
+  /** Upsert on id. Never writes voided_at: a Cerner charge is not voidable, and a redelivery keeps its claim links. */
+  saveCernerCharge(c: CernerCharge): void {
+    this.#run(`insert into charges (id, encounter_id, source, external_id, transaction_type, service_date, posted_date, code_system, code, modifiers_json, description, units, amount,
+        department, revenue_code, performing_json, ordering_json, diagnoses_json)
+      values (?,?,'cerner_dft',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       on conflict(id) do update set transaction_type=excluded.transaction_type, service_date=excluded.service_date, posted_date=excluded.posted_date,
         code_system=excluded.code_system, code=excluded.code, modifiers_json=excluded.modifiers_json, description=excluded.description, units=excluded.units,
         amount=excluded.amount, department=excluded.department, revenue_code=excluded.revenue_code, performing_json=excluded.performing_json,
-        ordering_json=excluded.ordering_json, dx_pointers_json=excluded.dx_pointers_json, status=excluded.status, claim_id=excluded.claim_id`,
+        ordering_json=excluded.ordering_json, diagnoses_json=excluded.diagnoses_json`,
       [c.id, c.encounterId, c.externalId, c.transactionType, c.serviceDate, c.postedDate ?? null, c.codeSystem, c.code, JSON.stringify(c.modifiers),
         c.description ?? null, c.units, c.amount, c.department ?? null, c.revenueCode ?? null, json(c.performingProvider), json(c.orderingProvider),
-        JSON.stringify(c.diagnosisPointers), c.status, c.claimId ?? null]);
+        JSON.stringify(c.diagnoses)]);
+  }
+  /** Insert only; a coder charge is never updated except by voidCharges. */
+  insertCoderCharges(rows: readonly CoderCharge[]): void {
+    this.transaction(() => {
+      for (const c of rows) {
+        this.#run(`insert into charges (id, encounter_id, source, external_id, code_assignment_id, voided_at, transaction_type, service_date, posted_date, code_system, code,
+            modifiers_json, description, units, amount, department, revenue_code, performing_json, ordering_json, diagnoses_json)
+          values (?,?,'coder',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [c.id, c.encounterId, c.externalId, c.codeAssignmentId, c.voidedAt ?? null, c.transactionType, c.serviceDate, c.postedDate ?? null, c.codeSystem, c.code,
+            JSON.stringify(c.modifiers), c.description ?? null, c.units, c.amount, c.department ?? null, c.revenueCode ?? null, json(c.performingProvider),
+            json(c.orderingProvider), JSON.stringify(c.diagnoses)]);
+      }
+    });
+  }
+  /** Sets voided_at where it is still null, so repeating a void changes nothing. */
+  voidCharges(ids: readonly ChargeId[], at: IsoDateTime): void {
+    this.transaction(() => {
+      for (const id of ids) this.#run('update charges set voided_at = ? where id = ? and voided_at is null', [at, id]);
+    });
+  }
+
+  // ClaimCharge. Writer: claims/build.ts only.
+
+  /** `insert or ignore`: attaching a charge twice leaves one link. */
+  attachCharges(claimId: ClaimId, chargeIds: readonly ChargeId[], at: IsoDateTime): void {
+    this.transaction(() => {
+      for (const id of chargeIds) this.#run('insert or ignore into claim_charges (claim_id, charge_id, attached_at) values (?,?,?)', [claimId, id, at]);
+    });
   }
 
   // Claims
@@ -391,6 +528,126 @@ export class Store {
     return this.#db.prepare(
       'select status, count(*) as count, sum(total_charge - total_paid - total_adjusted) as outstanding from claims group by status order by status',
     ).all() as { status: ClaimStatus; count: number; outstanding: number }[];
+  }
+
+  // Documents. Writer: ingest/upsert.ts appendDocumentVersion only; rows are never updated (trigger).
+
+  appendDocument(d: Document): void {
+    this.#run(`insert into documents (id, encounter_id, message_id, external_id, version, kind, status, title, author_json, signed_at, observed_at, body, attachment_json, recorded_at)
+      values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [d.id, d.encounterId, d.messageId, d.externalId, d.version, d.kind, d.status, d.title ?? null, json(d.author), d.signedAt ?? null, d.observedAt ?? null,
+        d.body, json(d.attachment), d.recordedAt]);
+  }
+  getDocument(id: DocumentId): Document | undefined {
+    return this.#one('select * from documents where id = ?', [id], documentFromRow);
+  }
+  /** Every version: documents ordered by their latest signed (else recorded) time, newest first, and versions newest first within each. */
+  listDocuments(encounterId: EncounterId): Document[] {
+    return this.#many(`select d.* from documents d where d.encounter_id = ?
+      order by (select max(coalesce(v.signed_at, v.recorded_at)) from documents v where v.encounter_id = d.encounter_id and v.external_id = d.external_id) desc,
+        d.external_id, d.version desc`, [encounterId], documentFromRow);
+  }
+  latestDocumentVersion(encounterId: EncounterId, externalId: string): Document | undefined {
+    return this.#one('select * from documents where encounter_id = ? and external_id = ? order by version desc limit 1', [encounterId, externalId], documentFromRow);
+  }
+  hasFinalDocument(encounterId: EncounterId): boolean {
+    return this.#one("select 1 as x from documents where encounter_id = ? and status in ('final', 'corrected') limit 1", [encounterId], () => true) ?? false;
+  }
+
+  // Coding tasks. Status is written only by recordTaskTransition (caller: coding/state.ts transitionTask).
+
+  getTask(id: CodingTaskId): CodingTask | undefined {
+    return this.#one('select * from coding_tasks where id = ?', [id], taskFromRow);
+  }
+  findTaskByEncounter(encounterId: EncounterId): CodingTask | undefined {
+    return this.#one('select * from coding_tasks where encounter_id = ?', [encounterId], taskFromRow);
+  }
+  listTasks(f: ListTasksFilter = {}): CodingTask[] {
+    const where: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (f.status) { where.push('status = ?'); params.push(f.status); }
+    if (f.assignee) { where.push('assignee = ?'); params.push(f.assignee); }
+    if (f.specialty) { where.push('specialty = ?'); params.push(f.specialty); }
+    if (f.documentationOverdueAt) { where.push("status = 'awaiting_documentation' and documentation_due_at <= ?"); params.push(f.documentationOverdueAt); }
+    return this.#many(`select * from coding_tasks ${where.length ? 'where ' + where.join(' and ') : ''} order by created_at, rowid`, params, taskFromRow);
+  }
+  /** Inserts the task and its first event together. Writer: coding/state.ts openTask. */
+  insertTask(task: CodingTask, first: CodingTaskEvent): void {
+    this.transaction(() => {
+      this.#run(`insert into coding_tasks (id, encounter_id, status, specialty, assignee, origin_json, documentation_due_at, created_at, updated_at) values (?,?,?,?,?,?,?,?,?)`,
+        [task.id, task.encounterId, task.status, task.specialty ?? null, task.assignee ?? null, JSON.stringify(task.origin), task.documentationDueAt ?? null, task.createdAt, task.updatedAt]);
+      this.#appendTaskEvent(first);
+    });
+  }
+  /** The only method that writes coding_tasks.status, and it cannot do so without an event row. Writer: coding/state.ts transitionTask. */
+  recordTaskTransition(taskId: CodingTaskId, to: TaskStatus, event: CodingTaskEvent): void {
+    this.transaction(() => {
+      this.#run('update coding_tasks set status = ?, updated_at = ? where id = ?', [to, event.at, taskId]);
+      this.#appendTaskEvent(event);
+    });
+  }
+  #appendTaskEvent(ev: CodingTaskEvent): void {
+    this.#run('insert into coding_task_events (task_id, at, from_status, to_status, reason, actor, detail_json) values (?,?,?,?,?,?,?)',
+      [ev.taskId, ev.at, ev.from, ev.to, ev.reason, ev.actor ?? null, json(ev.detail)]);
+  }
+  setTaskAssignee(taskId: CodingTaskId, assignee: string, at: IsoDateTime): void {
+    this.#run('update coding_tasks set assignee = ?, updated_at = ? where id = ?', [assignee, at, taskId]);
+  }
+  setTaskSpecialty(taskId: CodingTaskId, specialty: Specialty, at: IsoDateTime): void {
+    this.#run('update coding_tasks set specialty = ?, updated_at = ? where id = ?', [specialty, at, taskId]);
+  }
+  listTaskEvents(taskId: CodingTaskId): CodingTaskEvent[] {
+    return this.#many('select * from coding_task_events where task_id = ? order by seq', [taskId], taskEventFromRow);
+  }
+
+  // Code log. Writer: coding/codes.ts only. Append-only (trigger); the current set is derived by deriveCodeSet.
+
+  appendCodeAssignments(rows: readonly CodeAssignment[]): void {
+    this.transaction(() => {
+      for (const a of rows) {
+        this.#run(`insert into code_assignments (id, encounter_id, line_id, supersedes, kind, content_json, removed, provenance, source_ref, suggested_by_json, decided_by, decided_at, query_id, recorded_at)
+          values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [a.id, a.encounterId, a.lineId, a.supersedes ?? null, a.content.kind, JSON.stringify(a.content), a.removed ? 1 : 0, a.provenance, a.sourceRef ?? null,
+            json(a.suggestedBy), a.decision?.by ?? null, a.decision?.at ?? null, a.decision?.queryId ?? null, a.recordedAt]);
+      }
+    });
+  }
+  /** Log order. */
+  listCodeAssignments(encounterId: EncounterId): CodeAssignment[] {
+    return this.#many('select * from code_assignments where encounter_id = ? order by seq', [encounterId], codeAssignmentFromRow);
+  }
+
+  // Provider queries. Writer: coding/queries.ts only.
+
+  insertQuery(q: ProviderQuery): void {
+    this.#run('insert into provider_queries (id, task_id, question, raised_by, sent_to_json, channel, sent_at, answer_text, answered_at) values (?,?,?,?,?,?,?,?,?)',
+      [q.id, q.taskId, q.question, q.raisedBy, json(q.sentTo), q.channel, q.sentAt, q.answer?.text ?? null, q.answer?.at ?? null]);
+  }
+  /** Sets the answer where none is recorded yet. */
+  answerQuery(id: ProviderQueryId, text: string, at: IsoDateTime): void {
+    this.#run('update provider_queries set answer_text = ?, answered_at = ? where id = ? and answered_at is null', [text, at, id]);
+  }
+  getQuery(id: ProviderQueryId): ProviderQuery | undefined {
+    return this.#one('select * from provider_queries where id = ?', [id], queryFromRow);
+  }
+  listQueries(taskId: CodingTaskId): ProviderQuery[] {
+    return this.#many('select * from provider_queries where task_id = ? order by sent_at, id', [taskId], queryFromRow);
+  }
+
+  // Fee schedule. Writer: coding/fees.ts replaceFeeSchedule.
+
+  listFeeSchedule(): FeeScheduleLine[] {
+    return this.#many('select * from fee_schedule_lines order by code, modifiers_key, effective_from', [], feeLineFromRow);
+  }
+  /** Whole-set replacement. */
+  replaceFeeSchedule(lines: readonly FeeScheduleLine[]): void {
+    this.transaction(() => {
+      this.#run('delete from fee_schedule_lines', []);
+      for (const l of lines) {
+        this.#run('insert into fee_schedule_lines (code, modifiers_key, amount, effective_from, effective_to) values (?,?,?,?,?)',
+          [l.code, modifiersKey(l.modifiers), l.amount, l.effectiveFrom, l.effectiveTo ?? null]);
+      }
+    });
   }
 
   // Inbound messages
