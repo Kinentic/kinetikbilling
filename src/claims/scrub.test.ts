@@ -33,7 +33,7 @@ const FIXTURES: { rule: string; severity: ScrubSeverity; ctx: (c: ClaimContext) 
   { rule: 'coverage-ids', severity: 'error', ctx: (c) => ({ ...c, coverage: { ...c.coverage!, payerId: ' ' } }) },
   { rule: 'diagnoses-present', severity: 'error', ctx: (c) => ({ ...c, diagnoses: [] }) },
   { rule: 'diagnosis-icd10-shape', severity: 'error', ctx: (c) => ({ ...c, diagnoses: [{ ...c.diagnoses[0]!, code: '250.00' }, ...c.diagnoses.slice(1)] }) },
-  { rule: 'diagnosis-icd10-shape', severity: 'error', ctx: (c) => ({ ...c, diagnoses: [{ ...c.diagnoses[0]!, code: 'U07.1' }, ...c.diagnoses.slice(1)] }) },
+  { rule: 'diagnosis-icd10-shape', severity: 'error', ctx: (c) => ({ ...c, diagnoses: [{ ...c.diagnoses[0]!, code: '7X.99' }, ...c.diagnoses.slice(1)] }) },
   { rule: 'patient-demographics', severity: 'warning', ctx: ({ patient: { dob: _, ...p }, ...c }) => ({ ...c, patient: p }) },
   { rule: 'patient-demographics', severity: 'warning', ctx: (c) => ({ ...c, patient: { ...c.patient, sex: 'U' } }) },
   { rule: 'patient-address', severity: 'error', ctx: ({ patient: { address: _, ...p }, ...c }) => ({ ...c, patient: p }) },

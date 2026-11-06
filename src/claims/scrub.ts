@@ -24,7 +24,7 @@ const perCharge = (id: string, severity: ScrubSeverity, find: (c: Charge, ctx: C
 
 const when = (cond: boolean, message: string): Finding[] => (cond ? [{ message }] : []);
 
-const ICD10 = /^[A-TV-Z][0-9][0-9AB]\.?[0-9A-TV-Z]{0,4}$/;
+const ICD10 = /^[A-Z][0-9][0-9AB]\.?[0-9A-Z]{0,4}$/;
 
 /** NPI check digit: Luhn over the 15 digits formed by prefixing 80840. */
 export const isValidNpi = (npi: string): boolean => {

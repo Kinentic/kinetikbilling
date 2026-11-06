@@ -10,7 +10,7 @@ export const TRANSITIONS: Record<ClaimStatus, readonly ClaimStatus[]> = {
   rejected: ['draft'],
   accepted: ['paid', 'partially_paid', 'denied'],
   partially_paid: ['paid', 'partially_paid', 'denied', 'closed'],
-  paid: ['closed', 'partially_paid'],
+  paid: ['closed', 'partially_paid', 'paid'],
   denied: ['draft', 'closed'],
   closed: [],
 };

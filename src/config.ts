@@ -2,21 +2,10 @@
 // value has a development default so `npm start` works on a fresh checkout;
 // production deployments set the BILLING_* identifiers to real ones.
 
-import type { Address } from './domain/types.ts';
+import type { BillingProviderConfig } from './claims/config.ts';
 
-export interface BillingProviderConfig {
-  name: string;
-  npi: string;
-  taxId: string;
-  taxonomyCode: string;
-  address: Address;
-  submitterId: string;
-  submitterName: string;
-  contactName: string;
-  contactPhone: string;
-  receiverId: string;
-  receiverName: string;
-}
+export type { BillingProviderConfig };
+
 
 export interface AppConfig {
   mllp: { port: number; host: string };
